@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System;
@@ -25,11 +25,18 @@ namespace Snowflake.Data.Client
 
         private SFLogger logger = SFLoggerFactory.GetLogger<SnowflakeDbCommand>();
 
+        public SnowflakeDbCommand()
+        {
+            logger.Debug("Constucting SnowflakeDbCommand class");
+            // by default, no query timeout
+            this.CommandTimeout = 0;
+            parameterCollection = new SnowflakeDbParameterCollection();
+        }
+
         public SnowflakeDbCommand(SnowflakeDbConnection connection)
         {
             logger.Debug("Constucting SnowflakeDbCommand class");
             this.connection = connection;
-            this.sfStatement = new SFStatement(connection.SfSession);
             // by default, no query timeout
             this.CommandTimeout = 0;
             parameterCollection = new SnowflakeDbParameterCollection();
@@ -37,7 +44,7 @@ namespace Snowflake.Data.Client
 
         public override string CommandText
         {
-            get;  set;
+            get; set;
         }
 
         public override int CommandTimeout
@@ -79,10 +86,7 @@ namespace Snowflake.Data.Client
 
         public override UpdateRowSource UpdatedRowSource
         {
-            get
-            {
-                return UpdateRowSource.None;
-            }
+            get => UpdateRowSource.None;
 
             set
             {
@@ -95,14 +99,36 @@ namespace Snowflake.Data.Client
 
         protected override DbConnection DbConnection
         {
-            get
-            {
-                return connection;
-            }
+            get => connection;
 
             set
             {
-                throw new SnowflakeDbException(SFError.UNSUPPORTED_FEATURE);
+                if (value == null)
+                {
+                    if (connection == null)
+                    {
+                        return;
+                    }
+
+                    // Unsetting connection not supported.
+                    throw new SnowflakeDbException(SFError.UNSUPPORTED_FEATURE);
+                }
+
+                if (!(value is SnowflakeDbConnection))
+                {
+                    // Must be of type SnowflakeDbConnection.
+                    throw new SnowflakeDbException(SFError.UNSUPPORTED_FEATURE);
+                }
+
+                var sfc = (SnowflakeDbConnection) value;
+                if (connection != null && connection != sfc)
+                {
+                    // Connection already set.
+                    throw new SnowflakeDbException(SFError.UNSUPPORTED_FEATURE);
+                }
+
+                connection = sfc;
+                sfStatement = new SFStatement(sfc.SfSession);
             }
         }
 
@@ -123,14 +149,14 @@ namespace Snowflake.Data.Client
 
         public override void Cancel()
         {
-            sfStatement.Cancel();
+            // doesn't throw exception when sfStatement is null
+            sfStatement?.Cancel();
         }
-        
+
         public override int ExecuteNonQuery()
         {
             logger.Debug($"ExecuteNonQuery, command: {CommandText}");
             SFBaseResultSet resultSet = ExecuteInternal();
-            resultSet.Next();
             return resultSet.CalculateUpdateCount();
         }
 
@@ -140,8 +166,7 @@ namespace Snowflake.Data.Client
             if (cancellationToken.IsCancellationRequested)
                 throw new TaskCanceledException();
 
-            var resultSet = await ExecuteInternalAsync(cancellationToken);
-            await resultSet.NextAsync();
+            var resultSet = await ExecuteInternalAsync(cancellationToken).ConfigureAwait(false);
             return resultSet.CalculateUpdateCount();
         }
 
@@ -149,8 +174,11 @@ namespace Snowflake.Data.Client
         {
             logger.Debug($"ExecuteScalar, command: {CommandText}");
             SFBaseResultSet resultSet = ExecuteInternal();
-            resultSet.Next();
-            return resultSet.GetValue(0);
+
+            if(resultSet.Next())
+                return resultSet.GetValue(0);
+            else
+                return DBNull.Value;
         }
 
         public override async Task<object> ExecuteScalarAsync(CancellationToken cancellationToken)
@@ -159,9 +187,12 @@ namespace Snowflake.Data.Client
             if (cancellationToken.IsCancellationRequested)
                 throw new TaskCanceledException();
 
-            var result = await ExecuteInternalAsync(cancellationToken);
-            await result.NextAsync();
-            return result.GetValue(0);
+            var result = await ExecuteInternalAsync(cancellationToken).ConfigureAwait(false);
+
+            if(await result.NextAsync().ConfigureAwait(false))
+                return result.GetValue(0);
+            else
+                return DBNull.Value;
         }
 
         public override void Prepare()
@@ -184,7 +215,7 @@ namespace Snowflake.Data.Client
         protected override async Task<DbDataReader> ExecuteDbDataReaderAsync(CommandBehavior behavior, CancellationToken cancellationToken)
         {
             logger.Debug($"ExecuteDbDataReaderAsync, command: {CommandText}");
-            var result = await ExecuteInternalAsync(cancellationToken);
+            var result = await ExecuteInternalAsync(cancellationToken).ConfigureAwait(false);
             return new SnowflakeDbDataReader(this, result);
         }
 
@@ -251,13 +282,27 @@ namespace Snowflake.Data.Client
             }
         }
 
+        private void SetStatement() 
+        {
+            var session = (connection as SnowflakeDbConnection).SfSession;
+
+            // SetStatement is called when executing a command. If SfSession is null
+            // the connection has never been opened. Exception might be a bit vague.
+            if (session == null)
+                throw new Exception("Can't execute command when connection has never been opened");
+
+            this.sfStatement = new SFStatement(session);
+        }
+
         private SFBaseResultSet ExecuteInternal(bool describeOnly = false)
         {
+            SetStatement();
             return sfStatement.Execute(CommandTimeout, CommandText, convertToBindList(parameterCollection.parameterList), describeOnly);
         }
 
         private Task<SFBaseResultSet> ExecuteInternalAsync(CancellationToken cancellationToken, bool describeOnly = false)
         {
+            SetStatement();
             return sfStatement.ExecuteAsync(CommandTimeout, CommandText, convertToBindList(parameterCollection.parameterList), describeOnly, cancellationToken);
         }
     }

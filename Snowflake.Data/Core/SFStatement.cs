@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System;
@@ -19,8 +19,6 @@ namespace Snowflake.Data.Core
 
         internal SFSession SfSession { get; set; }
 
-        private const string SF_QUERY_PATH = "/queries/v1/query-request";
-
         private const string SF_QUERY_CANCEL_PATH = "/queries/v1/abort-request";
 
         private const string SF_QUERY_REQUEST_ID = "requestId";
@@ -37,7 +35,7 @@ namespace Snowflake.Data.Core
 
         private readonly object _requestIdLock = new object();
 
-        private readonly IRestRequest _restRequest;
+        private readonly IRestRequester _restRequester;
 
         private CancellationTokenSource _timeoutTokenSource;
         
@@ -45,13 +43,13 @@ namespace Snowflake.Data.Core
         // Cancel callback will be registered under token issued by this source.
         private CancellationTokenSource _linkedCancellationTokenSouce;
 
-        internal SFStatement(SFSession session, IRestRequest rest)
+        internal SFStatement(SFSession session, IRestRequester rest)
         {
             SfSession = session;
-            _restRequest = rest;
+            _restRequester = rest;
         }
 
-        internal SFStatement(SFSession session) : this(session, RestRequestImpl.Instance)
+        internal SFStatement(SFSession session) : this(session, RestRequester.Instance)
         { }
 
         private void AssignQueryRequestId()
@@ -79,8 +77,16 @@ namespace Snowflake.Data.Core
         {
             AssignQueryRequestId();
 
-            var queryUri = SfSession.BuildUri(SF_QUERY_PATH,
-                new Dictionary<string, string>() {{SF_QUERY_REQUEST_ID, _requestId}});
+            TimeSpan startTime = DateTime.UtcNow - new DateTime(1970, 1, 1);
+            string secondsSinceEpoch = Convert.ToInt64(startTime.TotalMilliseconds).ToString();
+            Dictionary<string, string> parameters = new Dictionary<string, string>()
+            {
+                { RestParams.SF_QUERY_REQUEST_ID, _requestId },
+                { RestParams.SF_QUERY_REQUEST_GUID, Guid.NewGuid().ToString() },
+                { RestParams.SF_QUERY_START_TIME, secondsSinceEpoch },
+            };
+
+            var queryUri = SfSession.BuildUri(RestPath.SF_QUERY_PATH, parameters);
 
             QueryRequest postBody = new QueryRequest()
             {
@@ -91,10 +97,12 @@ namespace Snowflake.Data.Core
 
             return new SFRestRequest
             {
-                uri = queryUri,
+                Url = queryUri,
                 authorizationToken = string.Format(SF_AUTHORIZATION_SNOWFLAKE_FMT, SfSession.sessionToken),
+                serviceName = SfSession.ParameterMap.ContainsKey(SFSessionParameter.SERVICE_NAME)
+                                ? (String)SfSession.ParameterMap[SFSessionParameter.SERVICE_NAME] : null,
                 jsonBody = postBody,
-                httpRequestTimeout = Timeout.InfiniteTimeSpan
+                HttpTimeout = Timeout.InfiniteTimeSpan
             };
         }
 
@@ -103,9 +111,9 @@ namespace Snowflake.Data.Core
             var uri = SfSession.BuildUri(resultPath);
             return new SFRestRequest()
             {
-                uri = uri,
+                Url = uri,
                 authorizationToken = String.Format(SF_AUTHORIZATION_SNOWFLAKE_FMT, SfSession.sessionToken),
-                httpRequestTimeout = Timeout.InfiniteTimeSpan
+                HttpTimeout = Timeout.InfiniteTimeSpan
             };
         }
 
@@ -155,12 +163,20 @@ namespace Snowflake.Data.Core
             var queryRequest = BuildQueryRequest(sql, bindings, describeOnly);
             try
             {
-                var response = await _restRequest.PostAsync<QueryExecResponse>(queryRequest, cancellationToken);
-                if (SessionExpired(response))
+                QueryExecResponse response = null;
+                bool receivedFirstQueryResponse = false;
+                while (!receivedFirstQueryResponse)
                 {
-                    SfSession.renewSession();
-                    ClearQueryRequestId();
-                    return await ExecuteAsync(timeout, sql, bindings, describeOnly, cancellationToken);
+                    response = await _restRequester.PostAsync<QueryExecResponse>(queryRequest, cancellationToken).ConfigureAwait(false);
+                    if (SessionExpired(response))
+                    {
+                        SfSession.renewSession();
+                        queryRequest.authorizationToken = string.Format(SF_AUTHORIZATION_SNOWFLAKE_FMT, SfSession.sessionToken);
+                    }
+                    else
+                    {
+                        receivedFirstQueryResponse = true;
+                    }
                 }
 
                 var lastResultUrl = response.data?.getResultUrl;
@@ -168,7 +184,7 @@ namespace Snowflake.Data.Core
                 while (RequestInProgress(response) || SessionExpired(response))
                 {
                     var req = BuildResultRequest(lastResultUrl);
-                    response = await _restRequest.GetAsync<QueryExecResponse>(req, cancellationToken);
+                    response = await _restRequester.GetAsync<QueryExecResponse>(req, cancellationToken).ConfigureAwait(false);
 
                     if (SessionExpired(response))
                     {
@@ -200,19 +216,27 @@ namespace Snowflake.Data.Core
             var queryRequest = BuildQueryRequest(sql, bindings, describeOnly);
             try
             {
-                var response = _restRequest.Post<QueryExecResponse>(queryRequest);
-                if (SessionExpired(response))
+                QueryExecResponse response = null;
+                bool receivedFirstQueryResponse = false;
+                while (!receivedFirstQueryResponse)
                 {
-                    SfSession.renewSession();
-                    ClearQueryRequestId();
-                    return Execute(timeout, sql, bindings, describeOnly);
+                    response = _restRequester.Post<QueryExecResponse>(queryRequest);
+                    if (SessionExpired(response))
+                    {
+                        SfSession.renewSession();
+                        queryRequest.authorizationToken = string.Format(SF_AUTHORIZATION_SNOWFLAKE_FMT, SfSession.sessionToken);
+                    }
+                    else
+                    {
+                        receivedFirstQueryResponse = true;
+                    }
                 }
 
                 var lastResultUrl = response.data?.getResultUrl;
                 while (RequestInProgress(response) || SessionExpired(response))
                 {
                     var req = BuildResultRequest(lastResultUrl);
-                    response = _restRequest.Get<QueryExecResponse>(req);
+                    response = _restRequester.Get<QueryExecResponse>(req);
 
                     if (SessionExpired(response))
                     {
@@ -244,9 +268,12 @@ namespace Snowflake.Data.Core
             {
                 if (_requestId == null)
                     return null;
-
-                var uri = SfSession.BuildUri(SF_QUERY_CANCEL_PATH,
-                    new Dictionary<string, string> {{SF_QUERY_REQUEST_ID, Guid.NewGuid().ToString()}});
+                Dictionary<string, string> parameters = new Dictionary<string, string>()
+                {
+                    { RestParams.SF_QUERY_REQUEST_ID, Guid.NewGuid().ToString() },
+                    { RestParams.SF_QUERY_REQUEST_GUID, Guid.NewGuid().ToString() },
+                };
+                var uri = SfSession.BuildUri(SF_QUERY_CANCEL_PATH, parameters);
 
                 QueryCancelRequest postBody = new QueryCancelRequest()
                 {
@@ -255,7 +282,7 @@ namespace Snowflake.Data.Core
 
                 return new SFRestRequest()
                 {
-                    uri = uri,
+                    Url = uri,
                     authorizationToken = string.Format(SF_AUTHORIZATION_SNOWFLAKE_FMT, SfSession.sessionToken),
                     jsonBody = postBody
                 };
@@ -268,7 +295,7 @@ namespace Snowflake.Data.Core
             if (request == null)
                 return;
 
-            var response = _restRequest.Post<NullDataResponse>(request);
+            var response = _restRequester.Post<NullDataResponse>(request);
 
             if (response.success)
             {

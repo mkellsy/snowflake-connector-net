@@ -1,28 +1,26 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System;
 using System.IO.Compression;
 using System.IO;
-using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Net.Http;
-using Newtonsoft.Json;
-using System.Diagnostics;
-using Newtonsoft.Json.Serialization;
 using Snowflake.Data.Log;
 
 namespace Snowflake.Data.Core
 {
-    class SFChunkDownloader
+    /// <summary>
+    ///     Downloader implementation that will be blocked if main thread consume falls behind
+    /// </summary>
+    class SFBlockingChunkDownloader : IChunkDownloader
     {
-        static private SFLogger logger = SFLoggerFactory.GetLogger<SFChunkDownloader>();
+        static private SFLogger logger = SFLoggerFactory.GetLogger<SFBlockingChunkDownloader>();
 
         private List<SFResultChunk> chunks;
 
@@ -33,22 +31,26 @@ namespace Snowflake.Data.Core
         // External cancellation token, used to stop donwload
         private CancellationToken externalCancellationToken;
 
-        //TODO: parameterize prefetch slot
-        const int prefetchSlot = 2;
+        private readonly int prefetchThreads;
 
-        private static IRestRequest restRequest = RestRequestImpl.Instance;
-
-        private static JsonSerializer jsonSerializer = new JsonSerializer();
+        private static IRestRequester restRequester = RestRequester.Instance;
 
         private Dictionary<string, string> chunkHeaders;
 
-        public SFChunkDownloader(int colCount, List<ExecResponseChunk>chunkInfos, string qrmk, 
-            Dictionary<string, string> chunkHeaders, CancellationToken cancellationToken)
+        private readonly SFBaseResultSet ResultSet;
+
+        public SFBlockingChunkDownloader(int colCount, 
+            List<ExecResponseChunk>chunkInfos, string qrmk, 
+            Dictionary<string, string> chunkHeaders, 
+            CancellationToken cancellationToken,
+            SFBaseResultSet ResultSet)
         {
             this.qrmk = qrmk;
             this.chunkHeaders = chunkHeaders;
             this.chunks = new List<SFResultChunk>();
             this.nextChunkToDownloadIndex = 0;
+            this.ResultSet = ResultSet;
+            this.prefetchThreads = GetPrefetchThreads(ResultSet);
 
             var idx = 0;
             foreach(ExecResponseChunk chunkInfo in chunkInfos)
@@ -60,11 +62,18 @@ namespace Snowflake.Data.Core
             FillDownloads();
         }
 
-        private BlockingCollection<Task<SFResultChunk>> _downloadTasks;
+        private int GetPrefetchThreads(SFBaseResultSet resultSet)
+        {
+            Dictionary<SFSessionParameter, Object> sessionParameters = resultSet.sfStatement.SfSession.ParameterMap;
+            String val = (String)sessionParameters[SFSessionParameter.CLIENT_PREFETCH_THREADS];
+            return Int32.Parse(val);
+        }
+
+        private BlockingCollection<Task<IResultChunk>> _downloadTasks;
         
         private void FillDownloads()
         {
-            _downloadTasks = new BlockingCollection<Task<SFResultChunk>>(prefetchSlot);
+            _downloadTasks = new BlockingCollection<Task<IResultChunk>>(prefetchThreads);
 
             Task.Run(() =>
             {
@@ -84,12 +93,19 @@ namespace Snowflake.Data.Core
             });
         }
         
-        public SFResultChunk GetNextChunk()
+        public Task<IResultChunk> GetNextChunkAsync()
         {
-            return _downloadTasks.IsCompleted ? null : _downloadTasks.Take().Result;
+            if (_downloadTasks.IsCompleted)
+            {
+                return Task.FromResult<IResultChunk>(null);
+            }
+            else
+            {
+                return _downloadTasks.Take();
+            }
         }
         
-        private async Task<SFResultChunk> DownloadChunkAsync(DownloadContext downloadContext)
+        private async Task<IResultChunk> DownloadChunkAsync(DownloadContext downloadContext)
         {
             logger.Info($"Start donwloading chunk #{downloadContext.chunkIndex}");
             SFResultChunk chunk = downloadContext.chunk;
@@ -98,16 +114,17 @@ namespace Snowflake.Data.Core
 
             S3DownloadRequest downloadRequest = new S3DownloadRequest()
             {
-                uri = new UriBuilder(chunk.url).Uri,
+                Url = new UriBuilder(chunk.url).Uri,
                 qrmk = downloadContext.qrmk,
                 // s3 download request timeout to one hour
-                timeout = TimeSpan.FromHours(1),
-                httpRequestTimeout = TimeSpan.FromSeconds(16),
+                RestTimeout = TimeSpan.FromHours(1),
+                HttpTimeout = TimeSpan.FromSeconds(32),
                 chunkHeaders = downloadContext.chunkHeaders
             };
 
-            var httpResponse = await restRequest.GetAsync(downloadRequest, downloadContext.cancellationToken);
-            Stream stream = httpResponse.Content.ReadAsStreamAsync().Result;
+
+            var httpResponse = await restRequester.GetAsync(downloadRequest, downloadContext.cancellationToken).ConfigureAwait(false);
+            Stream stream = Task.Run(async() => await httpResponse.Content.ReadAsStreamAsync()).Result;
             IEnumerable<string> encoding;
             //TODO this shouldn't be required.
             if (httpResponse.Content.Headers.TryGetValues("Content-Encoding", out encoding))
@@ -118,7 +135,7 @@ namespace Snowflake.Data.Core
                 }
             }
 
-            parseStreamIntoChunk(stream, chunk);
+            ParseStreamIntoChunk(stream, chunk);
 
             chunk.downloadState = DownloadState.SUCCESS;
             logger.Info($"Succeed downloading chunk #{downloadContext.chunkIndex}");
@@ -136,19 +153,15 @@ namespace Snowflake.Data.Core
         /// </summary>
         /// <param name="content"></param>
         /// <param name="resultChunk"></param>
-        private static void parseStreamIntoChunk(Stream content, SFResultChunk resultChunk)
+        private void ParseStreamIntoChunk(Stream content, SFResultChunk resultChunk)
         {
             Stream openBracket = new MemoryStream(Encoding.UTF8.GetBytes("["));
             Stream closeBracket = new MemoryStream(Encoding.UTF8.GetBytes("]"));
 
             Stream concatStream = new ConcatenatedStream(new Stream[3] { openBracket, content, closeBracket});
 
-            // parse results row by row
-            using (StreamReader sr = new StreamReader(concatStream))
-            using (JsonTextReader jr = new JsonTextReader(sr))
-            {
-                resultChunk.rowSet = jsonSerializer.Deserialize<string[,]>(jr);
-            }
+            IChunkParser parser = ChunkParserFactory.GetParser(concatStream);
+            parser.ParseChunk(resultChunk);
         }
     }
 
@@ -164,84 +177,4 @@ namespace Snowflake.Data.Core
 
         public CancellationToken cancellationToken { get; set; }
     }
-    
-    /// <summary>
-    ///     Used to concat multiple streams without copying. Since we need to preappend '[' and append ']'
-    /// </summary>
-    class ConcatenatedStream : Stream
-    {
-        Queue<Stream> streams;
-
-        public ConcatenatedStream(IEnumerable<Stream> streams)
-        {
-            this.streams = new Queue<Stream>(streams);
-        }
-
-        public override bool CanRead
-        {
-            get { return true; }
-        }
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            if (streams.Count == 0)
-                return 0;
-
-            int bytesRead = streams.Peek().Read(buffer, offset, count);
-            if (bytesRead == 0)
-            {
-                streams.Dequeue().Dispose();
-                bytesRead += Read(buffer, offset + bytesRead, count - bytesRead);
-            }
-            return bytesRead;
-        }
-
-        public override bool CanSeek
-        {
-            get { return false; }
-        }
-
-        public override bool CanWrite
-        {
-            get { return false; }
-        }
-
-        public override void Flush()
-        {
-            throw new NotImplementedException();
-        }
-
-        public override long Length
-        {
-            get { throw new NotImplementedException(); }
-        }
-
-        public override long Position
-        {
-            get
-            {
-                throw new NotImplementedException();
-            }
-            set
-            {
-                throw new NotImplementedException();
-            }
-        }
-
-        public override long Seek(long offset, SeekOrigin origin)
-        {
-            throw new NotImplementedException();
-        }
-
-        public override void SetLength(long value)
-        {
-            throw new NotImplementedException();
-        }
-
-        public override void Write(byte[] buffer, int offset, int count)
-        {
-            throw new NotImplementedException();
-        }
-    }
-
 }

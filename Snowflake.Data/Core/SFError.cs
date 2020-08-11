@@ -1,11 +1,8 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.Resources;
 
 namespace Snowflake.Data.Core
 {
@@ -39,7 +36,30 @@ namespace Snowflake.Data.Core
         UNSUPPORTED_FEATURE,
 
         [SFErrorAttr(errorCode = 270010)]
-        DATA_READER_ALREADY_CLOSED
+        DATA_READER_ALREADY_CLOSED,
+
+        [SFErrorAttr(errorCode = 270011)]
+        UNKNOWN_AUTHENTICATOR,
+
+        [SFErrorAttr(errorCode = 270012)]
+        UNSUPPORTED_PLATFORM,
+
+        // Okta related
+        [SFErrorAttr(errorCode = 270040)]
+        IDP_SSO_TOKEN_URL_MISMATCH,
+
+        [SFErrorAttr(errorCode = 270041)]
+        IDP_SAML_POSTBACK_NOTFOUND,
+
+        [SFErrorAttr(errorCode = 270042)]
+        IDP_SAML_POSTBACK_INVALID,
+
+        // External browser related
+        [SFErrorAttr(errorCode = 270050)]
+        BROWSER_RESPONSE_WRONG_METHOD,
+
+        [SFErrorAttr(errorCode = 270051)]
+        BROWSER_RESPONSE_INVALID_PREFIX,
     }
 
     class SFErrorAttr : Attribute

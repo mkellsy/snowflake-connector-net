@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System;
@@ -23,12 +23,17 @@ namespace Snowflake.Data.Client
 
         private bool isClosed;
 
+        private readonly DataTable SchemaTable;
+
         internal SnowflakeDbDataReader(SnowflakeDbCommand command, SFBaseResultSet resultSet)
         {
             this.dbCommand = command;
             this.resultSet = resultSet;
             this.isClosed = false;
+            this.SchemaTable = PopulateSchemaTable(resultSet);
+            RecordsAffected = resultSet.CalculateUpdateCount();
         }
+
         public override object this[string name]
         {
             get
@@ -79,8 +84,50 @@ namespace Snowflake.Data.Client
             }
         }
 
-        public override int RecordsAffected => resultSet.CalculateUpdateCount();
+        public override int RecordsAffected { get; }
 
+        public override DataTable GetSchemaTable()
+        {
+            return this.SchemaTable;
+        }
+
+        private DataTable PopulateSchemaTable(SFBaseResultSet resultSet)
+        {
+            var table = new DataTable("SchemaTable");
+
+            table.Columns.Add(SchemaTableColumn.ColumnName, typeof(string));
+            table.Columns.Add(SchemaTableColumn.ColumnOrdinal, typeof(int));
+            table.Columns.Add(SchemaTableColumn.ColumnSize, typeof(int));
+            table.Columns.Add(SchemaTableColumn.NumericPrecision, typeof(int));
+            table.Columns.Add(SchemaTableColumn.NumericScale, typeof(int));
+            table.Columns.Add(SchemaTableColumn.DataType, typeof(Type));
+            table.Columns.Add(SchemaTableColumn.AllowDBNull, typeof(bool));
+            table.Columns.Add(SchemaTableColumn.ProviderType, typeof(SFDataType));
+
+            int columnOrdinal = 0;
+            SFResultSetMetaData sfResultSetMetaData = resultSet.sfResultSetMetaData;
+            foreach (ExecResponseRowType rowType in sfResultSetMetaData.rowTypes)
+            {
+                var row = table.NewRow();
+
+                row[SchemaTableColumn.ColumnName] = rowType.name;
+                row[SchemaTableColumn.ColumnOrdinal] = columnOrdinal;
+                row[SchemaTableColumn.ColumnSize] = (int)rowType.length;
+                row[SchemaTableColumn.NumericPrecision] = (int)rowType.precision;
+                row[SchemaTableColumn.NumericScale] = (int)rowType.scale;
+                row[SchemaTableColumn.AllowDBNull] = rowType.nullable;
+
+                Tuple<SFDataType, Type> types = sfResultSetMetaData.GetTypesByIndex(columnOrdinal);
+                row[SchemaTableColumn.ProviderType] = types.Item1;
+                row[SchemaTableColumn.DataType] = types.Item2;
+
+                table.Rows.Add(row);
+                columnOrdinal++;
+            }
+
+            return table;
+        }
+		
         public override bool GetBoolean(int ordinal)
         {
             return resultSet.GetValue<bool>(ordinal);

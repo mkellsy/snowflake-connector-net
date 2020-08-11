@@ -117,11 +117,26 @@
   <resheader name="writer">
     <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
   </resheader>
+  <data name="BROWSER_RESPONSE_INVALID_PREFIX" xml:space="preserve">
+    <value>Expect ?token=, but got {0}</value>
+  </data>
+  <data name="BROWSER_RESPONSE_WRONG_METHOD" xml:space="preserve">
+    <value>Expect GET, but got {0}</value>
+  </data>
   <data name="COLUMN_INDEX_OUT_OF_BOUND" xml:space="preserve">
     <value>Column index {0} is out of bound of valid index.</value>
   </data>
   <data name="DATA_READER_ALREADY_CLOSED" xml:space="preserve">
     <value>Data reader has already been closed.</value>
+  </data>
+  <data name="IDP_SAML_POSTBACK_INVALID" xml:space="preserve">
+    <value>Scheme/Hostname mismatch: postback lrl: {0}  session url: {1}</value>
+  </data>
+  <data name="IDP_SAML_POSTBACK_NOTFOUND" xml:space="preserve">
+    <value>Cannot found the postback url from the SAML response</value>
+  </data>
+  <data name="IDP_SSO_TOKEN_URL_MISMATCH" xml:space="preserve">
+    <value>Scheme/Hostname mismatch: token/sso url 1: {0}  session url: {1}</value>
   </data>
   <data name="INTERNAL_ERROR" xml:space="preserve">
     <value>Snowflake Internal Error: {0}</value>
@@ -144,7 +159,13 @@
   <data name="STATEMENT_ALREADY_RUNNING_QUERY" xml:space="preserve">
     <value>Another query is already running against this statement.</value>
   </data>
+  <data name="UNKNOWN_AUTHENTICATOR" xml:space="preserve">
+    <value>Unknown authenticator: {0}</value>
+  </data>
   <data name="UNSUPPORTED_FEATURE" xml:space="preserve">
     <value>Feature is not supported. </value>
+  </data>
+  <data name="UNSUPPORTED_PLATFORM" xml:space="preserve">
+    <value>OS platform is not supported.</value>
   </data>
 </root>

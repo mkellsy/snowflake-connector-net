@@ -10,6 +10,7 @@ The Snowflake .NET connector supports most core functionality. Currently, the PU
 
 Library target is under .NET Framework 4.6 and .NET Standard 2.0.
 
+
 Building the Package
 ====================
 
@@ -64,7 +65,8 @@ Before running tests, create a parameters.json file under Snowflake.Data.Tests\ 
     "SNOWFLAKE_TEST_WAREHOUSE": "TESTWH",
     "SNOWFLAKE_TEST_DATABASE": "TESTDB",
     "SNOWFLAKE_TEST_SCHEMA": "TESTSCHEMA",
-    "SNOWFLAKE_TEST_ROLE": "TESTROLE"
+    "SNOWFLAKE_TEST_ROLE": "TESTROLE",
+    "SNOWFLAKE_TEST_HOST": "testaccount.snowflakecomputing.com"
   }
 }
 ```
@@ -103,15 +105,17 @@ i.e "\<key1\>=\<value1\>;\<key2\>=\<value2\>...". The following table lists all 
 
 | Connection Property | Required | Comment                                                                       |
 |---------------------|----------|-------------------------------------------------------------------------------|
-| ACCOUNT             | Yes      |                                                                               |
+| ACCOUNT             | Yes      | Account should not include region or clound provider information. i.e. account should be XXX instead of XXX.us-east-1.|
 | DB                  | No       |                                                                               |
-| HOST                | No       | If no value specified, driver will use \<ACCOUNT\>.snowflakecomputing.com     |
-| PASSWORD            | Yes      |                                                                               |
+| HOST                | No       | If no value specified, driver will use \<ACCOUNT\>.snowflakecomputing.com. However, if you are not in us-west deployment, or you want to use global url, HOST is required, i.e. XXX.us-east-1.snowflakecomputing.com, or XXX-jkabfvdjisoa778wqfgeruishafeuw89q.global.snowflakecomputing.com|
+| PASSWORD            | Depends  | Ignored for external browser, required for other authentication methods.      |
 | ROLE                | No       |                                                                               |
 | SCHEMA              | No       |                                                                               |
-| USER                | Yes      |                                                                               |
+| USER                | Yes      | For okta and externalbrowser, this should be the login name for your idp.     |
 | WAREHOUSE           | No       |                                                                               |
 | CONNECTION_TIMEOUT  | No       | Total timeout in seconds when connecting to Snowflake. Default to 120 seconds |
+| AUTHENTICATOR       | No       | The method of authentication. Currently support snowflake(default), [native SSO okta](https://docs.snowflake.net/manuals/user-guide/admin-security-fed-auth-use.html#native-sso-okta-only) and [externalbrowser](https://docs.snowflake.net/manuals/user-guide/admin-security-fed-auth-use.html#browser-based-sso).  |
+|VALIDATE_DEFAULT_PARAMETERS| No       | Whether DB, SCHEMA and WAREHOUSE should be verified when makeing connection. Default to be true. |
 
 <br />
 
@@ -161,7 +165,6 @@ using (IDbConnection conn = new SnowflakeDbConnection())
 
     IDbCommand cmd = conn.CreateCommand();
     cmd.CommandText = "insert into t values (?),(?),(?)";
-    IDataReader reader = cmd.ExecuteReader();
                   
     var p1 = cmd.CreateParameter();
     p1.ParameterName = "1";
@@ -219,4 +222,17 @@ Here is a sample app.config file that uses [log4net](http://logging.apache.org/l
     </root>
   </log4net>
 ```
+
+Notice
+----------------
+Snowflake has identified an issue on Feb 20, 2020, with our logging code for the .NET drivers in which we write Master and Session tokens in the clear to the debug logs. The debug logs are collected locally on the drive where your programs are running. This issue impacts only those instances where the programs are run with debug flags enabled, i.e. setting the log level value= "Debug” or “All" in the log4Net config
+
+Under normal conditions, the Master and Session tokens captured in the log files are short-lived for about 4 and 1 hours, respectively. They will expire after the 4-hour window unless explicitly refreshed, in which case they could be refreshed indefinitely.
+
+If you are using the .NET driver please take the following action:
+1. Upgrade to the latest version(v1.1.0) as soon as possible.
+2. Remove all “Debugging” options for any existing .NET drivers in use.
+3. Delete any logs collected thus far and make sure that all copies are deleted. 
+4. If you cannot upgrade for any reason, please ensure all debugging is disabled
+5. If you are concerned about a potential compromise, contact Snowflake Customer Support for assistance with invalidating all active sessions/tokens. 
 

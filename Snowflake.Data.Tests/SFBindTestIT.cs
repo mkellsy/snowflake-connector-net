@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System;
@@ -18,7 +18,7 @@ namespace Snowflake.Data.Tests
         {
             using (IDbConnection conn = new SnowflakeDbConnection())
             {
-                conn.ConnectionString = connectionString;
+                conn.ConnectionString = ConnectionString;
                 conn.Open();
 
                 using (IDbCommand cmd = conn.CreateCommand())
@@ -56,7 +56,51 @@ namespace Snowflake.Data.Tests
         [Test]
         public void testBindNullValue()
         {
+            using (SnowflakeDbConnection dbConnection = new SnowflakeDbConnection())
+            {
+                dbConnection.ConnectionString = ConnectionString;
+                dbConnection.Open();
+                try
+                {
+                    using (IDbCommand command = dbConnection.CreateCommand())
+                    {
+                        command.CommandText = "create or replace table TEST_TBL (ID number);";
+                        command.ExecuteNonQuery();
+                    }
+                    
+                    using (IDbCommand command = dbConnection.CreateCommand())
+                    {
+                        command.CommandText = "insert into TEST_TBL values(:p0)";
+                        var param = command.CreateParameter();
+                        param.ParameterName = "p0";
+                        param.DbType = System.Data.DbType.Int32;
+                        param.Value = DBNull.Value;
+                        command.Parameters.Add(param);
+                        int rowsInserted = command.ExecuteNonQuery();
+                        Assert.AreEqual(1, rowsInserted);
+                    }
 
+                    using (IDbCommand command = dbConnection.CreateCommand())
+                    {
+                        command.CommandText = "select ID from TEST_TBL;";
+                        using (IDataReader reader = command.ExecuteReader())
+                        {
+                            reader.Read();
+                            Assert.IsTrue(reader.IsDBNull(0));
+                            reader.Close();
+                        }
+                    }
+
+                }
+                finally
+                {
+                    using (IDbCommand command = dbConnection.CreateCommand())
+                    {
+                        command.CommandText = "drop table TEST_TBL";
+                        command.ExecuteNonQuery();
+                    }
+                }
+            }
         }
 
         [Test]
@@ -64,7 +108,7 @@ namespace Snowflake.Data.Tests
         {
             using (IDbConnection conn = new SnowflakeDbConnection())
             {
-                conn.ConnectionString = connectionString;
+                conn.ConnectionString = ConnectionString;
                 conn.Open();
 
                 using (IDbCommand cmd = conn.CreateCommand())

@@ -1,12 +1,8 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System.Data.Common;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System;
 using System.Data;
 using Snowflake.Data.Core;
@@ -17,15 +13,19 @@ namespace Snowflake.Data.Client
     {
         public SFDataType SFDataType { get; set; }
 
+        private SFDataType OriginType;
+
         public SnowflakeDbParameter()
         {
             SFDataType = SFDataType.None;
+            OriginType = SFDataType.None;
         }
 
         public SnowflakeDbParameter(string ParameterName, SFDataType SFDataType)
         {
             this.ParameterName = ParameterName;
             this.SFDataType = SFDataType;
+            OriginType = SFDataType;
         }
 
         public SnowflakeDbParameter(int ParameterIndex, SFDataType SFDataType)
@@ -52,74 +52,21 @@ namespace Snowflake.Data.Client
             }
         }
 
-        public override bool IsNullable
-        {
-            get
-            {
-                throw new NotImplementedException();
-            }
+        public override bool IsNullable { get; set; }
 
-            set
-            {
-                throw new NotImplementedException();
-            }
-        }
+        public override string ParameterName { get; set; }
 
-        public override string ParameterName
-        {
-            get;
-            set;
-        }
+        public override int Size { get; set; }
 
-        public override int Size
-        {
-            get
-            {
-                throw new NotImplementedException();
-            }
+        public override string SourceColumn { get; set; }
 
-            set
-            {
-                throw new NotImplementedException();
-            }
-        }
+        public override bool SourceColumnNullMapping { get; set; }
 
-        public override string SourceColumn
-        {
-            get
-            {
-                throw new NotImplementedException();
-            }
-
-            set
-            {
-                throw new NotImplementedException();
-            }
-        }
-
-        public override bool SourceColumnNullMapping
-        {
-            get
-            {
-                throw new NotImplementedException();
-            }
-
-            set
-            {
-                throw new NotImplementedException();
-            }
-        }
-
-        public override object Value
-        {
-            get;
-
-            set;
-        }
+        public override object Value { get; set; }
 
         public override void ResetDbType()
         {
-            throw new NotImplementedException();
+            SFDataType = OriginType;
         }
     }
 }

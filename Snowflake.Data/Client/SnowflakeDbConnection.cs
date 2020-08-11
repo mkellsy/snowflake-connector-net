@@ -1,14 +1,11 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System;
 using System.Data.Common;
 using Snowflake.Data.Core;
 using System.Security;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using System.Data;
 using System.Threading;
@@ -27,6 +24,8 @@ namespace Snowflake.Data.Client
 
         private int _connectionTimeout;
 
+        private bool disposed = false;
+
         public SnowflakeDbConnection()
         {
             _connectionState = ConnectionState.Closed;
@@ -41,6 +40,11 @@ namespace Snowflake.Data.Client
         public SecureString Password
         {
             get; set;
+        }
+
+        public bool IsOpen()
+        {
+            return _connectionState == ConnectionState.Open;
         }
 
         public override string Database => _connectionState == ConnectionState.Open ? SfSession.database : string.Empty;
@@ -83,25 +87,37 @@ namespace Snowflake.Data.Client
 
         public override void Close()
         {
-            logger.Debug($"Close Connection.");
+            logger.Debug("Close Connection.");
 
             if (_connectionState != ConnectionState.Closed && SfSession != null)
             {
                 SfSession.close();
+                _connectionState = ConnectionState.Closed;
             }
+
+            _connectionState = ConnectionState.Closed;
         }
 
         public override void Open()
         {
-            logger.Debug($"Open Connection.");
+            logger.Debug("Open Connection.");
             SetSession();
-            SfSession.Open();
+            try
+            {
+                SfSession.Open();
+            }
+            catch (Exception e)
+            {
+                // Otherwise when Dispose() is called, the close request would timeout.
+                _connectionState = ConnectionState.Closed;
+                throw e;
+            }
             OnSessionEstablished();
         }
         
         public override Task OpenAsync(CancellationToken cancellationToken)
         {
-            logger.Debug($"Open Connection Async.");
+            logger.Debug("Open Connection Async.");
             if (cancellationToken.IsCancellationRequested)
                 return Task.FromCanceled(cancellationToken);
 
@@ -112,7 +128,7 @@ namespace Snowflake.Data.Client
         private void SetSession()
         {
             SfSession = new SFSession(ConnectionString, Password);
-            _connectionTimeout = SfSession.connectionTimeout;
+            _connectionTimeout = (int)SfSession.connectionTimeout.TotalSeconds;
             _connectionState = ConnectionState.Connecting;
         }
 
@@ -123,12 +139,35 @@ namespace Snowflake.Data.Client
 
         protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel)
         {
+            // Parameterless BeginTransaction() method of the super class calls this method with IsolationLevel.Unspecified,
+            // Change the isolation level to ReadCommitted
+            if (isolationLevel == IsolationLevel.Unspecified)
+            {
+                isolationLevel = IsolationLevel.ReadCommitted;
+            }
+
             return new SnowflakeDbTransaction(isolationLevel, this);
         }
 
         protected override DbCommand CreateDbCommand()
         {
             return new SnowflakeDbCommand(this);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposed)
+                return;
+
+            this.Close();
+            disposed = true;
+
+            base.Dispose(disposing);
+        }
+
+        ~SnowflakeDbConnection()
+        {
+            Dispose(false);
         }
     }
 }

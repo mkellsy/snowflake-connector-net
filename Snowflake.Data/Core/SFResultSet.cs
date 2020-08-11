@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System.Threading;
@@ -19,27 +19,24 @@ namespace Snowflake.Data.Core
 
         private readonly int _totalChunkCount;
         
-        private readonly SFChunkDownloader _chunkDownloader;
+        private readonly IChunkDownloader _chunkDownloader;
 
-        private SFResultChunk _currentChunk;
+        private IResultChunk _currentChunk;
 
-        public SFResultSet(QueryExecResponseData responseData, SFStatement sfStatement, CancellationToken cancellationToken)
+        public SFResultSet(QueryExecResponseData responseData, SFStatement sfStatement, CancellationToken cancellationToken) : base()
         {
             columnCount = responseData.rowType.Count;
             _currentChunkRowIdx = -1;
             _currentChunkRowCount = responseData.rowSet.GetLength(0);
            
             this.sfStatement = sfStatement;
+            updateSessionStatus(responseData);
 
             if (responseData.chunks != null)
             {
                 // counting the first chunk
-                _totalChunkCount = responseData.chunks.Count + 1;
-                _chunkDownloader = new SFChunkDownloader(columnCount,
-                                                        responseData.chunks,
-                                                        responseData.qrmk,
-                                                        responseData.chunkHeaders,
-                                                        cancellationToken);
+                _totalChunkCount = responseData.chunks.Count;
+                _chunkDownloader = ChunkDownloaderFactory.GetDownloader(responseData, this, cancellationToken);
             }
 
             _currentChunk = new SFResultChunk(responseData.rowSet);
@@ -47,20 +44,22 @@ namespace Snowflake.Data.Core
 
             sfResultSetMetaData = new SFResultSetMetaData(responseData);
 
-            updateSessionStatus(responseData);
             isClosed = false;
         }
 
-        internal void resetChunkInfo(SFResultChunk nextChunk)
+        internal void resetChunkInfo(IResultChunk nextChunk)
         {
-            Logger.Debug($"Recieved chunk #{nextChunk.ChunkIndex + 1} of {_totalChunkCount}");
-            _currentChunk.rowSet = null;
+            Logger.Debug($"Recieved chunk #{nextChunk.GetChunkIndex() + 1} of {_totalChunkCount}");
+            if (_currentChunk is SFResultChunk)
+            {
+                ((SFResultChunk)_currentChunk).rowSet = null;
+            }
             _currentChunk = nextChunk;
             _currentChunkRowIdx = 0;
-            _currentChunkRowCount = _currentChunk.rowCount;
+            _currentChunkRowCount = _currentChunk.GetRowCount();
         }
 
-        internal override Task<bool> NextAsync()
+        internal override async Task<bool> NextAsync()
         {
             if (isClosed)
             {
@@ -70,30 +69,27 @@ namespace Snowflake.Data.Core
             _currentChunkRowIdx++;
             if (_currentChunkRowIdx < _currentChunkRowCount)
             {
-                return Task.FromResult(true);
+                return true;
             }
 
             if (_chunkDownloader != null)
             {
                 // GetNextChunk could be blocked if download result is not done yet. 
                 // So put this piece of code in a seperate task
-                return Task.Run(() =>
+                Logger.Info("Get next chunk from chunk downloader");
+                IResultChunk nextChunk = await _chunkDownloader.GetNextChunkAsync().ConfigureAwait(false);
+                if (nextChunk != null)
                 {
-                    Logger.Info("Get next chunk from chunk downloader");
-                    SFResultChunk nextChunk;
-                    if ((nextChunk = _chunkDownloader.GetNextChunk()) != null)
-                    {
-                        resetChunkInfo(nextChunk);
-                        return true;
-                    }
-                    else
-                    {
-                        return false;
-                    }
-                });
+                    resetChunkInfo(nextChunk);
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
             }
             
-           return Task.FromResult(false);
+           return false;
         }
 
         internal override bool Next()
@@ -109,14 +105,16 @@ namespace Snowflake.Data.Core
                 return true;
             }
 
-            Logger.Info("Get next chunk from chunk downloader");
-            SFResultChunk nextChunk;
-            if ((nextChunk = _chunkDownloader?.GetNextChunk()) != null)
+            if (_chunkDownloader != null)
             {
-                resetChunkInfo(nextChunk);
-                return true;
+                Logger.Info("Get next chunk from chunk downloader");
+                IResultChunk nextChunk = Task.Run(async() => await _chunkDownloader.GetNextChunkAsync()).Result;
+                if (nextChunk != null)
+                {
+                    resetChunkInfo(nextChunk);
+                    return true;
+                }
             }
-            
            return false;
         }
 
@@ -132,7 +130,7 @@ namespace Snowflake.Data.Core
                 throw new SnowflakeDbException(SFError.COLUMN_INDEX_OUT_OF_BOUND, columnIndex);
             }
 
-            return _currentChunk.extractCell(_currentChunkRowIdx, columnIndex);
+            return _currentChunk.ExtractCell(_currentChunkRowIdx, columnIndex);
         }
 
         private void updateSessionStatus(QueryExecResponseData responseData)
@@ -141,7 +139,7 @@ namespace Snowflake.Data.Core
             session.database = responseData.finalDatabaseName;
             session.schema = responseData.finalSchemaName;
 
-            SFSession.updateParameterMap(session.parameterMap, responseData.parameters);
+            session.UpdateSessionParameterMap(responseData.parameters);
         }
     }
 }

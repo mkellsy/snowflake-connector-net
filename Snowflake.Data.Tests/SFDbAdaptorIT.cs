@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 namespace Snowflake.Data.Tests
@@ -18,7 +18,7 @@ namespace Snowflake.Data.Tests
             DataSet ds = new DataSet("ds");
             using (SnowflakeDbConnection conn = new SnowflakeDbConnection())
             {
-                conn.ConnectionString = connectionString;
+                conn.ConnectionString = ConnectionString;
                 conn.Open();
 
                 IDbDataAdapter adaptor = new SnowflakeDbDataAdapter("select 1 as col1, 2 AS col2", conn);

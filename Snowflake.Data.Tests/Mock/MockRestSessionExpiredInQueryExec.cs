@@ -1,4 +1,7 @@
-﻿using System;
+﻿/*
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
+ */
+
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,7 +11,7 @@ namespace Snowflake.Data.Tests.Mock
 {
     using Snowflake.Data.Core;
 
-    class MockRestSessionExpiredInQueryExec : IRestRequest
+    class MockRestSessionExpiredInQueryExec : IRestRequester
     {
         static private readonly int QUERY_IN_EXEC_CODE = 333333;
 
@@ -18,13 +21,14 @@ namespace Snowflake.Data.Tests.Mock
 
         public MockRestSessionExpiredInQueryExec() { }
 
-        public Task<T> PostAsync<T>(SFRestRequest postRequest, CancellationToken cancellationToken)
+        public Task<T> PostAsync<T>(IRestRequest request, CancellationToken cancellationToken)
         {
-            if (postRequest.jsonBody is AuthnRequest)
+            SFRestRequest sfRequest = (SFRestRequest)request;
+            if (sfRequest.jsonBody is LoginRequest)
             {
-                AuthnResponse authnResponse = new AuthnResponse
+                LoginResponse authnResponse = new LoginResponse
                 {
-                    data = new AuthnResponseData()
+                    data = new LoginResponseData()
                     {
                         token = "session_token",
                         masterToken = "master_token",
@@ -37,7 +41,7 @@ namespace Snowflake.Data.Tests.Mock
                 // login request return success
                 return Task.FromResult<T>((T)(object)authnResponse);
             }
-            else if (postRequest.jsonBody is QueryRequest)
+            else if (sfRequest.jsonBody is QueryRequest)
             {
                 QueryExecResponse queryExecResponse = new QueryExecResponse
                 {
@@ -47,7 +51,7 @@ namespace Snowflake.Data.Tests.Mock
                 return Task.FromResult<T>((T)(object)queryExecResponse);
                 
             }
-            else if (postRequest.jsonBody is RenewSessionRequest)
+            else if (sfRequest.jsonBody is RenewSessionRequest)
             {
                 return Task.FromResult<T>((T)(object)new RenewSessionResponse
                 {
@@ -64,18 +68,19 @@ namespace Snowflake.Data.Tests.Mock
             }
         }
 
-        public T Post<T>(SFRestRequest postRequest)
+        public T Post<T>(IRestRequest postRequest)
         {
             return Task.Run(async () => await PostAsync<T>(postRequest, CancellationToken.None)).Result;
         }
 
-        public T Get<T>(SFRestRequest request)
+        public T Get<T>(IRestRequest request)
         {
             return Task.Run(async () => await GetAsync<T>(request, CancellationToken.None)).Result;
         }
 
-        public Task<T> GetAsync<T>(SFRestRequest request, CancellationToken cancellationToken)
+        public Task<T> GetAsync<T>(IRestRequest request, CancellationToken cancellationToken)
         {
+            SFRestRequest sfRequest = (SFRestRequest)request;
             if (getResultCallCount == 0)
             {
                 getResultCallCount++;
@@ -96,8 +101,8 @@ namespace Snowflake.Data.Tests.Mock
                 };
                 return Task.FromResult<T>((T)(object)queryExecResponse);
             }
-            else if (getResultCallCount == 2 && 
-                request.authorizationToken.Equals("Snowflake Token=\"new_session_token\""))
+            else if (getResultCallCount == 2 &&
+                sfRequest.authorizationToken.Equals("Snowflake Token=\"new_session_token\""))
             {
                 getResultCallCount++;
                 QueryExecResponse queryExecResponse = new QueryExecResponse
@@ -130,9 +135,14 @@ namespace Snowflake.Data.Tests.Mock
             }
         }
 
-        public Task<HttpResponseMessage> GetAsync(S3DownloadRequest request, CancellationToken cancellationToken)
+        public Task<HttpResponseMessage> GetAsync(IRestRequest request, CancellationToken cancellationToken)
         {
             return Task.FromResult<HttpResponseMessage>(null);
+        }
+
+        public HttpResponseMessage Get(IRestRequest request)
+        {
+            return null;
         }
     }
 }

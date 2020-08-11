@@ -1,6 +1,9 @@
-﻿using System;
+﻿/*
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
+ */
+
+using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Net.Http;
@@ -9,7 +12,7 @@ namespace Snowflake.Data.Tests.Mock
 {
     using Snowflake.Data.Core;
 
-    class MockRestSessionExpired : IRestRequest
+    class MockRestSessionExpired : IRestRequester
     {
         static private readonly String EXPIRED_SESSION_TOKEN="session_expired_token";
 
@@ -17,15 +20,20 @@ namespace Snowflake.Data.Tests.Mock
 
         static private readonly int SESSION_EXPIRED_CODE = 390112;
 
+        public string FirstTimeRequestID;
+
+        public string SecondTimeRequestID;
+
         public MockRestSessionExpired() { }
 
-        public Task<T> PostAsync<T>(SFRestRequest postRequest, CancellationToken cancellationToken)
+        public Task<T> PostAsync<T>(IRestRequest request, CancellationToken cancellationToken)
         {
-            if (postRequest.jsonBody is AuthnRequest)
+            SFRestRequest sfRequest = (SFRestRequest)request;
+            if (sfRequest.jsonBody is LoginRequest)
             {
-                AuthnResponse authnResponse = new AuthnResponse
+                LoginResponse authnResponse = new LoginResponse
                 {
-                    data = new AuthnResponseData()
+                    data = new LoginResponseData()
                     {
                         token = EXPIRED_SESSION_TOKEN,
                         masterToken = "master_token",
@@ -38,10 +46,11 @@ namespace Snowflake.Data.Tests.Mock
                 // login request return success
                 return Task.FromResult<T>((T)(object)authnResponse);
             }
-            else if (postRequest.jsonBody is QueryRequest)
+            else if (sfRequest.jsonBody is QueryRequest)
             {
-                if (postRequest.authorizationToken.Equals(String.Format(TOKEN_FMT, EXPIRED_SESSION_TOKEN)))
+                if (sfRequest.authorizationToken.Equals(String.Format(TOKEN_FMT, EXPIRED_SESSION_TOKEN)))
                 {
+                    FirstTimeRequestID = ExtractRequestID(sfRequest.Url.Query);
                     QueryExecResponse queryExecResponse = new QueryExecResponse
                     {
                         success = false,
@@ -49,8 +58,9 @@ namespace Snowflake.Data.Tests.Mock
                     };
                     return Task.FromResult<T>((T)(object)queryExecResponse);
                 }
-                else if (postRequest.authorizationToken.Equals(String.Format(TOKEN_FMT, "new_session_token")))
+                else if (sfRequest.authorizationToken.Equals(String.Format(TOKEN_FMT, "new_session_token")))
                 {
+                    SecondTimeRequestID = ExtractRequestID(sfRequest.Url.Query);
                     QueryExecResponse queryExecResponse = new QueryExecResponse
                     {
                         success = true,
@@ -80,14 +90,15 @@ namespace Snowflake.Data.Tests.Mock
                     return Task.FromResult<T>((T)(object)queryExecResponse);
                 }
             }
-            else if (postRequest.jsonBody is RenewSessionRequest)
+            else if (sfRequest.jsonBody is RenewSessionRequest)
             {
                 return Task.FromResult<T>((T)(object)new RenewSessionResponse
                 {
                     success = true,
                     data = new RenewSessionResponseData()
                     {
-                        sessionToken = "new_session_token"
+                        sessionToken = "new_session_token",
+                        masterToken = "new_master_token"
                     }
                 });
             }
@@ -97,24 +108,36 @@ namespace Snowflake.Data.Tests.Mock
             }
         }
 
-        public T Post<T>(SFRestRequest postRequest)
+        public T Post<T>(IRestRequest postRequest)
         {
             return Task.Run(async () => await PostAsync<T>(postRequest, CancellationToken.None)).Result;
         }
 
-        public T Get<T>(SFRestRequest request)
+        public T Get<T>(IRestRequest request)
         {
             return Task.Run(async () => await GetAsync<T>(request, CancellationToken.None)).Result;
         }
 
-        public Task<T> GetAsync<T>(SFRestRequest request, CancellationToken cancellationToken)
+        public Task<T> GetAsync<T>(IRestRequest request, CancellationToken cancellationToken)
         {
             return Task.FromResult<T>((T)(object)null);
         }
 
-        public Task<HttpResponseMessage> GetAsync(S3DownloadRequest request, CancellationToken cancellationToken)
+        public Task<HttpResponseMessage> GetAsync(IRestRequest request, CancellationToken cancellationToken)
         {
             return Task.FromResult<HttpResponseMessage>(null);
+        }
+
+        public HttpResponseMessage Get(IRestRequest request)
+        {
+            return null;
+        }
+        
+        private string ExtractRequestID(string queries)
+        {
+            int start = queries.IndexOf("requestId=");
+            start += 10;
+            return queries.Substring(start, 36);
         }
     }
 }

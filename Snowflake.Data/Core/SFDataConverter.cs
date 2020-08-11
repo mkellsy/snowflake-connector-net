@@ -1,11 +1,14 @@
 ﻿/*
- * Copyright (c) 2012-2017 Snowflake Computing Inc. All rights reserved.
+ * Copyright (c) 2012-2019 Snowflake Computing Inc. All rights reserved.
  */
 
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
 using System.Data;
+using System.Globalization;
 using System.Text;
+using System.Threading;
 using Snowflake.Data.Log;
 using Snowflake.Data.Client;
 
@@ -22,12 +25,18 @@ namespace Snowflake.Data.Core
         private static readonly SFLogger Logger = SFLoggerFactory.GetLogger<SFDataConverter>();
 
         private static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        
-        
-        internal static object ConvertToCSharpVal(string srcVal, SFDataType srcType, Type destType)
+
+        private Dictionary<Type, TypeConverter> typeConverters = new Dictionary<Type, TypeConverter>();
+
+        internal SFDataConverter()
         {
-            Logger.Debug($"src value: {srcVal}, srcType: {srcType}, destType: {destType}");
-            
+            Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
+        }
+        
+        internal object ConvertToCSharpVal(string srcVal, SFDataType srcType, Type destType)
+        {
+            //Logger.DebugFmt("src value: {0}, srcType: {1}, destType: {2}", srcVal, srcType, destType);
+
             if (srcVal == null)
                 return DBNull.Value;
 
@@ -39,8 +48,11 @@ namespace Snowflake.Data.Core
                 || destType == typeof(float)
                 || destType == typeof(decimal))
             {
-                var typeConverter = TypeDescriptor.GetConverter(destType);
-                return typeConverter.ConvertFrom(srcVal);
+                if (!typeConverters.ContainsKey(destType))
+                {
+                    typeConverters.Add(destType, TypeDescriptor.GetConverter(destType));
+                }
+                return typeConverters[destType].ConvertFrom(srcVal);
             }
             else if (destType == typeof(Boolean))
             {
@@ -82,7 +94,8 @@ namespace Snowflake.Data.Core
                 case SFDataType.TIMESTAMP_NTZ:
 
                     Tuple<long, long> secAndNsec = ExtractTimestamp(srcVal);
-                    return UnixEpoch.AddTicks((long)(secAndNsec.Item1 * 1000 * 1000 * 1000 + secAndNsec.Item2) / 100);
+                    var tickDiff = secAndNsec.Item1 * 10000000L + secAndNsec.Item2 / 100L;
+                    return UnixEpoch.AddTicks(tickDiff);
 
                 default:
                     throw new SnowflakeDbException(SFError.INVALID_DATA_CONVERSION, srcVal, srcType, typeof(DateTime));
@@ -130,8 +143,18 @@ namespace Snowflake.Data.Core
             }
             else
             {
-                return Tuple.Create(Int64.Parse(srcVal.Substring(0, dotIndex)), 
-                    Int64.Parse(srcVal.Substring(dotIndex+1, srcVal.Length-dotIndex-1)));
+                var intPart = Int64.Parse(srcVal.Substring(0, dotIndex));
+                var decimalPartLength = srcVal.Length - dotIndex - 1;
+                var decimalPartStr = srcVal.Substring(dotIndex + 1, decimalPartLength);
+                var decimalPart = Int64.Parse(decimalPartStr);
+                // If the decimal part contained less than nine characters, we must convert the value to nanoseconds by
+                // multiplying by 10^[precision difference].
+                if (decimalPartLength < 9)
+                {
+                    decimalPart *= (int) Math.Pow(10, 9 - decimalPartLength);
+                }
+
+                return Tuple.Create(intPart, decimalPart);                
             }
         }
 
@@ -140,8 +163,9 @@ namespace Snowflake.Data.Core
         {
             string destType;
             string destVal;
+            var srcValAsCultureInvariantString = (srcVal == DBNull.Value) ? null : string.Format(CultureInfo.InvariantCulture, "{0}", srcVal);
 
-            switch(srcType)
+            switch (srcType)
             {
                 case DbType.Decimal:
                 case DbType.Int16:
@@ -152,37 +176,38 @@ namespace Snowflake.Data.Core
                 case DbType.UInt64:
                 case DbType.VarNumeric:
                     destType = SFDataType.FIXED.ToString();
-                    destVal = srcVal.ToString();
+                    destVal = srcValAsCultureInvariantString;
                     break;
 
                 case DbType.Boolean:
                     destType = SFDataType.BOOLEAN.ToString();
-                    destVal = srcVal.ToString();
+                    destVal = srcValAsCultureInvariantString;
                     break;
 
                 case DbType.Double:
                     destType = SFDataType.REAL.ToString();
-                    destVal = srcVal.ToString();
+                    destVal = srcValAsCultureInvariantString;
                     break;
 
                 case DbType.Guid:
                 case DbType.String:
                 case DbType.StringFixedLength:
                     destType = SFDataType.TEXT.ToString();
-                    destVal = srcVal.ToString();
+                    destVal = srcValAsCultureInvariantString;
                     break;
 
                 case DbType.Date:
                     destType = SFDataType.DATE.ToString();
                     if (srcVal.GetType() != typeof(DateTime))
                     {
-                        throw new SnowflakeDbException(SFError.INVALID_DATA_CONVERSION, srcVal, 
+                        throw new SnowflakeDbException(SFError.INVALID_DATA_CONVERSION, srcVal,
                             srcVal.GetType().ToString(), DbType.Date.ToString());
                     }
                     else
                     {
-                        long millis = (long)((DateTime)srcVal).ToUniversalTime().Subtract(
-                            UnixEpoch).TotalMilliseconds;
+                        DateTime dt = ((DateTime)srcVal).Date;
+                        var ts = dt.Subtract(UnixEpoch);
+                        long millis = (long)(ts.TotalMilliseconds);
                         destVal = millis.ToString();
                     }
                     break;
@@ -212,8 +237,10 @@ namespace Snowflake.Data.Core
                     }
                     else
                     {
-                        DateTime srcDt = ((DateTime)srcVal);
-                        destVal = ((long)(srcDt.Subtract(UnixEpoch).Ticks * 100)).ToString();
+                        DateTime srcDt = (DateTime)srcVal;
+                        var diff = srcDt.Subtract(UnixEpoch);
+                        var tickDiff = diff.Ticks;
+                        destVal = $"{tickDiff}00"; // Cannot multiple tickDiff by 100 because long might overflow.
                     }
                     break;
                 
